@@ -1,0 +1,186 @@
+---
+title: "final project - 5-level classification"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+library(dplyr)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(gbm)
+library(tidyverse)
+```
+
+```{r, split data and define functions}
+data = read.csv("student-por.csv", sep = ";")
+data = data %>% mutate(levels = case_when(
+  G3 >= 16 ~ "A",
+  G3 >= 14 & G3 <= 15 ~ "B",
+  G3 >= 12 & G3 <= 13 ~ "C",
+  G3 >= 10 & G3 <= 11 ~ "D",
+  G3 <= 9 ~ "F",
+  TRUE ~ as.character(G3)
+))
+data$levels = as.factor(data$levels)
+set.seed(42)
+trn_index = sample(1:nrow(data), round(nrow(data) * 0.9), replace = FALSE)
+trn = data[trn_index, ]
+tst = data[-trn_index, ]
+
+rmse = function(act, pred) {
+  sqrt(mean((act - pred) ^ 2))
+}
+mae = function(act, pred) {
+  abs(mean(act - pred))
+}
+acc = function(act, pred) {
+  mean(act == pred)
+}
+```
+
+```{r, knn}
+form = formula(levels ~ . - G3)
+set.seed(42)
+knn_mod = train(form, data = trn,
+                method = "knn",
+                trControl = trainControl(method = "cv", number = 10),
+                tuneLength = 10
+                )
+# knn_mod
+# acc(act = tst$levels, pred = predict(knn_mod, tst))
+```
+
+```{r, decision tree}
+set.seed(42)
+tree_mod = train(form, data = trn,
+                 method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10),
+                 tuneLength = 10
+                )
+# tree_mod
+# acc(act = tst$levels, pred = predict(tree_mod, tst))
+
+rpart.plot::rpart.plot(tree_mod$finalModel)
+```
+
+```{r, random forest}
+set.seed(42)
+rf_mod = train(form, data = trn,
+               method = "rf",
+               trControl = trainControl(method = "oob"),
+               tuneLength = 10,
+               importance = TRUE
+              )
+# rf_mod
+# acc(act = tst$levels, pred = predict(rf_mod, tst))
+
+rf_mod$finalModel$confusion
+randomForest::varImpPlot(rf_mod$finalModel)
+```
+
+```{r, regularization - regularized multinomial logistic regression}
+set.seed(42)
+regular_mod = train(form, data = trn,
+               method = "glmnet",
+               trControl = trainControl(method = "cv", number = 10)
+              )
+# regular_mod ###final model uses alpha = 1 -> lasso
+# acc(act = tst$levels, pred = predict(regular_mod, tst))
+```
+
+```{r, Stochastic Gradient Boosting}
+set.seed(42)
+boost_mod = train(form, data = trn,
+               method = "gbm",
+               trControl = trainControl(method = "cv", number = 10),
+               verbose = TRUE
+              )
+# boost_mod
+# acc(act = tst$levels, pred = predict(boost_mod, tst))
+```
+
+```{r, test accuracy}
+preds = purrr::map(list(knn_mod, tree_mod, rf_mod, regular_mod, boost_mod), predict, tst)
+tst_acc = purrr::map_dbl(preds, acc, act = tst$levels) #####decision tree model is the best
+```
+
+
+
+
+```{r, knn w/o G1, G2}
+form2 = formula(levels ~ . - G3 - G1 - G2)
+set.seed(42)
+knn_mod_2 = caret::train(form2, data = trn,
+                method = "knn",
+                trControl = caret::trainControl(method = "cv", number = 10),
+                tuneLength = 20
+                )
+# knn_mod_2
+# acc(act = tst$levels, pred = predict(knn_mod_2, tst))
+confusionMatrix(data = predict(knn_mod_2, tst), reference = tst$levels)
+```
+
+```{r, decision tree w/o G1, G2}
+set.seed(42)
+tree_mod_2 = train(form2, data = trn,
+                 method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10),
+                 tuneLength = 10
+                )
+# tree_mod_2
+# acc(act = tst$levels, pred = predict(tree_mod_2, tst))
+
+rpart.plot::rpart.plot(tree_mod_2$finalModel)
+tree_mod_2$finalModel$variable.importance
+confusionMatrix(data = predict(tree_mod_2, tst), reference = tst$levels)
+```
+
+```{r, random forest w/o G1, G2}
+set.seed(42)
+rf_mod_2 = caret::train(form2, data = trn,
+               method = "rf",
+               trControl = caret::trainControl(method = "oob"),
+               tuneLength = 10,
+               importance = TRUE
+              )
+# rf_mod_2
+# acc(act = tst$levels, pred = predict(rf_mod_2, tst))
+
+rf_mod_2$finalModel$confusion
+randomForest::varImpPlot(rf_mod_2$finalModel)
+confusionMatrix(data = predict(rf_mod_2, tst), reference = tst$levels)
+```
+
+```{r, regularization w/o G1, G2}
+set.seed(42)
+regular_mod_2 = train(form2, data = trn,
+               method = "glmnet",
+               trControl = trainControl(method = "cv", number = 10)
+              )
+# regular_mod_2 
+# acc(act = tst$levels, pred = predict(regular_mod_2, tst))
+confusionMatrix(data = predict(regular_mod_2, tst), reference = tst$levels)
+```
+
+```{r, Stochastic Gradient Boosting w/o G1, G2}
+set.seed(42)
+boost_mod_2 = train(form2, data = trn,
+               method = "gbm",
+               trControl = trainControl(method = "cv", number = 10)
+              )
+# boost_mod_2
+# acc(act = tst$levels, pred = predict(boost_mod_2, tst))
+confusionMatrix(data = predict(boost_mod_2, tst), reference = tst$levels)
+```
+
+```{r, test accuracy w/o G1, G2}
+preds_2 = purrr::map(list(knn_mod_2, tree_mod_2, rf_mod_2, regular_mod_2, boost_mod_2), predict, tst)
+tst_acc_2 = purrr::map_dbl(preds_2, acc, act = tst$levels) #####regularized multinomial logistic regression model is the best
+```

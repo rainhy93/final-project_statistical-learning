@@ -1,0 +1,97 @@
+---
+title: "Secondary Student Performance Prediction"
+author: Xiaoyun Zhuang (xiaoyun6), Yu Huang (yuh4), Junjing Liu (junjing2)
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The quality of Portuguese secondary education is not so good as shown in the record of European Statistics [^1] in terms of the high failure rate. Statistical analysis is applied to the data to seek the potential of predicting students’ final grades based on their demographic information, social and school related features, and extracurricular attributes.
+
+The first reason that we fit different statistical models to predict their final grades is that we would like to know whether the final exam is too hard or not. If the final exam is too hard, when we use the regular grading scale, many students will not get A. As a result, we need to curve their grades. If the model is good enough, when students’ actual grades differ a lot from their predicted grades, the instructor may need to curve the grades. So the model is used to give students a relatively fair final grade.
+
+As for the second reason, we all know that sometimes, we do not do well on the final exam due to extraneous factors that are beyond our control even though we have worked very hard. Meanwhile, some students might do very well purely by luck even though they have not sufficiently learned the course materials. Neither situation is fair to all students. If we have a relatively good model to predict students’ final grades, and find that their actual grades are significantly better than their predicted grades, then it raises a warning signal and we may want to know the reasons. Besides, we may want to give them another chance, if students’ actual grades turn out to be substantially worse than the predicted grades.
+
+# Method
+
+## Data
+
+The data originates from the UCI Machine Learning Respository [^2]. The data was collected from two public Portuguese schools using school reports and questionnaires during the 2005-2006 school year.
+
+It contain two subsets respectively for Mathematics grades and Portuguese grades but here we only consider the data for Portuguese. It contains students’ 3-period grades for Portuguese language course, their demographic information , social-economic-status-related features, school-related attributes, and extracurricular predictors. The full data description could be found in Appendix. 
+
+Here is the first several rows of the data:
+
+```{r}
+data = read.csv("data/student-por.csv", sep = ";")
+head(data)
+hist(data$G3)
+```
+
+
+## Method
+
+We decided to train our models in two ways. One approach is to use all available features to predict the final grade. The other approach is to use predictors related to students’ family background. Based on the paper shown on UCI website, students who study in public schools tend to perform poorly in studies. We might easily think that the reason why they cannot go to private schools is that they don’t have a good family. This might be one of the reasons why they don’t have good grades.
+
+Here is the evidence to run the model.
+
+```{r}
+form = formula(G3 ~ . - G1 - G2)
+lm_mod = lm(form, data = data[-c(1:5),])
+summary(lm_mod)
+ 
+predict(lm_mod, data[1:5,])
+```
+
+
+
+# Appendix
+
+## Data Dictionary
+
+- `sex`: student’s sex (binary: female or male)
+- `age`: student’s age (numeric: from 15 to 22)
+- `school`: student’s school (binary: **Gabriel Pereira** or **Mousinho da Silveira**)
+- `address`: student’s home address type (binary: urban or rural)
+- `Pstatus`: parent’s cohabitation status (binary: living together or apart)
+- `Medu`: mother’s education (numeric: from 0 to 4[^a])
+- `Mjob`: mother’s job (nominal[^b])
+- `Fedu`: father’s education (numeric: from 0 to 4[^a])
+- `Fjob`: father’s job (nominal[^b])
+- `guardian`: student’s guardian (nominal: mother, father or other)
+- `famsize`: family size (binary: ≤ 3 or > 3)
+- `famrel`: quality of family relationships (numeric: from 1 – very bad to 5 – excellent)
+- `reason`: reason to choose this school (nominal: close to home, school reputation, course preference or other)
+- `traveltime`: home to school travel time (numeric: 1 – < 15 min., 2 – 15 to 30 min., 3 – 30 min. to 1 hour
+or 4 – > 1 hour)
+- `studytime`: weekly study time (numeric: 1 – < 2 hours, 2 – 2 to 5 hours, 3 – 5 to 10 hours or 4 – > 10 hours)
+- `failures`: number of past class failures (numeric: $n$ if 1 ≤ $n$ < 3, else 4)
+- `schoolsup`: extra educational school support (binary: yes or no)
+- `famsup`: family educational support (binary: yes or no)
+- `activities`: extra-curricular activities (binary: yes or no)
+- `paidclass`: extra paid classes (binary: yes or no)
+- `internet`: Internet access at home (binary: yes or no)
+- `nursery`: attended nursery school (binary: yes or no)
+- `higher`: wants to take higher education (binary: yes or no)
+- `romantic`: with a romantic relationship (binary: yes or no)
+- `freetime`: free time after school (numeric: from 1 – very low to 5 – very high)
+- `goout`: going out with friends (numeric: from 1 – very low to 5 – very high)
+- `Walc`: weekend alcohol consumption (numeric: from 1 – very low to 5 – very high)
+- `Dalc`: workday alcohol consumption (numeric: from 1 – very low to 5 – very high)
+- `health`: current health status (numeric: from 1 – very bad to 5 – very good)
+- `absences`: number of school absences (numeric: from 0 to 93)
+- `G1`: first period grade (numeric: from 0 to 20)
+- `G2`: second period grade (numeric: from 0 to 20)
+- `G3`: final grade (numeric: from 0 to 20)
+
+[^a]: 0 – none, 1 – primary education (4th grade), 2 – 5th to 9th grade, 3 – secondary education or 4 – higher education
+[^b]: teacher, health care related, civil services (e.g. administrative or police), at home or other.
+
+## Links
+
+[^1]: [Student Performance Data Set](http://archive.ics.uci.edu/ml/datasets/Student+Performance)
+[^2]: [European Statistics](https://ec.europa.eu/eurostat/)

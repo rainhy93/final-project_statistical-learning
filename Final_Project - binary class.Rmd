@@ -1,0 +1,234 @@
+---
+title: 'Final Project: Secondary Student Performance Prediction'
+author: "Junjing Liu"
+date: "December 14, 2019"
+output: html_document
+---
+
+```{r}
+data = read.csv("student-por.csv", sep = ";")
+set.seed(42)
+trn_index = sample(1:nrow(data), round(nrow(data) * 0.9), replace = FALSE)
+trn = data[trn_index, ]
+tst = data[-trn_index, ]
+
+rmse = function(act, pred) {
+  sqrt(mean((act - pred) ^ 2))
+}
+mae = function(act, pred) {
+  abs(mean(act - pred))
+}
+acc = function(act, pred) {
+  mean(act == pred)
+}
+```
+
+
+# Classification
+## Without G1 and G2
+
+```{r, warning = FALSE}
+library(caret)
+library(glmnet)
+library(randomForest)
+library(ROSE)
+trn["level"] = ifelse(trn["G3"] >= 10, "pass", "fail")
+tst["level"] = ifelse(tst["G3"] >= 10, "pass", "fail")
+
+# Random Forest w/ subsampling for class imbalance
+form = formula(level ~ . - G1 - G2 - G3)
+set.seed(42)
+cv_rf = train(form, data = trn, method = "rf",
+              trControl = trainControl(method = "oob",
+                                       sampling = "rose"))
+pred_rf = predict(cv_rf, tst)
+acc(act = tst$level, pred = pred_rf)
+cv_rf$finalModel$confusion
+
+randomForest::varImpPlot(cv_rf$finalModel)
+cv_rf$finalModel$importance
+confusionMatrix(pred_rf, reference = as.factor(tst$level), positive = "pass")
+
+# KNN w/ subsampling for class imbalance
+set.seed(42)
+cv_knn = train(form, data = trn, method = "knn",
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_knn = predict(cv_knn, tst)
+acc(act = tst$level, pred = pred_knn)
+
+# Decision Tree w/ subsampling for class imbalance
+set.seed(42)
+cv_rpart = train(form, data = trn, method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10,
+                                          sampling = "rose"))
+pred_rpart = predict(cv_rpart, tst)
+acc(act = tst$level, pred = pred_rpart)
+
+cv_rpart$finalModel$variable.importance
+rpart.plot::rpart.plot(cv_rpart$finalModel)
+confusionMatrix(pred_rpart, reference = as.factor(tst$level), positive = "pass")
+
+# Logistic Regression w/ subsampling for class imbalance
+set.seed(42)
+cv_glm = train(form, data = trn, method = "glm",
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_glm = predict(cv_glm, tst)
+acc(act = tst$level, pred = pred_glm) ######[1] 0.2769231 too low!!!
+
+# Naive Bayes w/ subsampling for class imbalance
+set.seed(42)
+cv_nb = train(form, data = trn, method = "nb",
+              trControl = trainControl(method = "cv", number = 10,
+                                       sampling = "rose"))
+pred_nb = predict(cv_nb, tst)
+acc(act = tst$level, pred = pred_nb)
+
+confusionMatrix(pred_nb, reference = as.factor(tst$level), positive = "pass")
+
+# GBM w/ subsampling for class imbalance
+set.seed(42)
+cv_gbm = train(form, data = trn, method = "gbm", verbose = FALSE,
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_gbm = predict(cv_gbm, tst)
+acc(act = tst$level, pred = pred_gbm)
+
+confusionMatrix(pred_gbm, reference = as.factor(tst$level), positive = "pass")
+
+# Ridge Regression
+trn_x = model.matrix(level ~ . - G1 - G2 - G3, data = trn)[, -1]
+tst_x = model.matrix(level ~ . - G1 - G2 - G3, data = tst)[, -1]
+
+set.seed(42)
+cv_ridge = cv.glmnet(trn_x, trn$level, nfolds = 10, family = "binomial", alpha = 0)
+
+mod_ridge = glmnet(trn_x, trn$level, family = "binomial", alpha = 0, lambda = cv_ridge$lambda.min)
+pred_ridge = predict(mod_ridge, tst_x, type = "class")
+accuracy_ridge = acc(act = tst$level, pred = pred_ridge)
+accuracy_ridge
+
+# Lasso Regression
+set.seed(42)
+cv_lasso = cv.glmnet(trn_x, trn$level, nfolds = 10, family = "binomial", alpha = 1)
+
+mod_lasso = glmnet(trn_x, trn$level, family = "binomial", alpha = 1, lambda = cv_lasso$lambda.min)
+pred_lasso = predict(mod_lasso, tst_x, type = "class")
+accuracy_lasso = acc(act = tst$level, pred = pred_lasso)
+accuracy_lasso
+```
+
+## With G1 and G2
+
+```{r, warning = FALSE}
+library(caret)
+library(glmnet)
+trn["level"] = ifelse(trn["G3"] >= 10, "pass", "fail")
+tst["level"] = ifelse(tst["G3"] >= 10, "pass", "fail")
+
+# Random Forest w/ subsampling for class imbalance
+form_12 = formula(level ~ . - G3)
+cv_rf_12 = train(form_12, data = trn, method = "rf",
+                 trControl = trainControl(method = "oob", number = 10,
+                                          sampling = "rose"))
+pred_rf_12 = predict(cv_rf_12, tst)
+acc(act = tst$level, pred = pred_rf_12)
+
+cv_rf_12$finalModel$confusion
+
+randomForest::varImpPlot(cv_rf_12$finalModel)
+cv_rf_12$finalModel$importance
+confusionMatrix(pred_rf_12, reference = as.factor(tst$level), positive = "pass")
+
+# KNN w/ subsampling for class imbalance
+set.seed(42)
+cv_knn_12 = train(form_12, data = trn, method = "knn",
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_knn_12 = predict(cv_knn_12, tst)
+acc(act = tst$level, pred = pred_knn_12)
+
+confusionMatrix(pred_knn_12, reference = as.factor(tst$level), positive = "pass")
+
+# Decision Tree w/ subsampling for class imbalance
+set.seed(42)
+cv_rpart_12 = train(form_12, data = trn, method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10,
+                                      sampling = "rose"))
+pred_rpart_12 = predict(cv_rpart_12, tst)
+acc(act = tst$level, pred = pred_rpart_12)
+confusionMatrix(pred_rpart_12, reference = as.factor(tst$level), positive = "pass")
+
+cv_rpart_12$finalModel$variable.importance
+rpart.plot::rpart.plot(cv_rpart_12$finalModel)
+
+# Logistic Regression w/ subsampling for class imbalance
+set.seed(42)
+cv_glm_12 = train(form_12, data = trn, method = "glm",
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_glm_12 = predict(cv_glm_12, tst)
+acc(act = tst$level, pred = pred_glm_12)  #####[1] 0.1230769 too low!!!
+
+confusionMatrix(pred_glm_12, reference = as.factor(tst$level), positive = "pass")
+
+# Naive Bayes w/ subsampling for class imbalance
+set.seed(42)
+cv_nb_12 = train(form_12, data = trn, method = "nb",
+              trControl = trainControl(method = "cv", number = 10,
+                                       sampling = "rose"))
+pred_nb_12 = predict(cv_nb_12, tst)
+acc(act = tst$level, pred = pred_nb_12)
+
+confusionMatrix(pred_nb_12, reference = as.factor(tst$level), positive = "pass")
+
+# GBM w/ subsampling for class imbalance
+set.seed(42)
+cv_gbm_12 = train(form_12, data = trn, method = "gbm", verbose = FALSE,
+               trControl = trainControl(method = "cv", number = 10,
+                                        sampling = "rose"))
+pred_gbm_12 = predict(cv_gbm_12, tst)
+acc(act = tst$level, pred = pred_gbm_12)
+
+confusionMatrix(pred_gbm_12, reference = as.factor(tst$level), positive = "pass")
+
+# Ridge Regression
+trn_x_12 = model.matrix(level ~ . - G3, data = trn)[, -1]
+tst_x_12 = model.matrix(level ~ . - G3, data = tst)[, -1]
+
+cv_ridge_12 = cv.glmnet(trn_x_12, trn$level, nfolds = 10, family = "binomial", alpha = 0)
+
+mod_ridge_12 = glmnet(trn_x_12, trn$level, family = "binomial", alpha = 0, lambda = cv_ridge_12$lambda.min)
+pred_ridge_12 = predict(mod_ridge_12, tst_x_12, type = "class")
+accuracy_ridge_12 = acc(act = tst$level, pred = pred_ridge_12)
+accuracy_ridge_12
+
+# Lasso Regression
+cv_lasso_12 = cv.glmnet(trn_x_12, trn$level, nfolds = 10, family = "binomial", alpha = 1)
+
+mod_lasso_12 = glmnet(trn_x_12, trn$level, family = "binomial", alpha = 1, lambda = cv_lasso_12$lambda.min)
+pred_lasso_12 = predict(mod_lasso_12, tst_x_12, type = "class")
+accuracy_lasso_12 = acc(act = tst$level, pred = pred_lasso_12)
+accuracy_lasso_12
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

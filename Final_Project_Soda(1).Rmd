@@ -1,0 +1,622 @@
+---
+title: 'Final Project: Secondary Student Performance Prediction'
+author: "Junjing Liu, Yu Huang, Xiaoyun Zhuang"
+date: "December 14, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = TRUE, warning = FALSE)
+```
+
+```{r libraries, message = FALSE}
+library(caret)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(dplyr)
+library(randomForest)
+library(gbm)
+library(tidyverse)
+library(kernlab)
+library(ROSE)
+library(ggiraphExtra)
+library(knitr)
+library(kableExtra)
+```
+
+# Abstract
+> The use of machine learning with educational data mining (EDM) to predict learner performance has always been an important research area. In this project, a variety of learning techniques were explored and validated for performance prediction. Based on comparison of predicted and actual results, we took prediction into account for grade curving. 
+
+# Introduction
+
+## Research Purpose 
+
+Generally, a grade curve refers to a relative grading procedure that assigns grades for assignments based on the performance of the class as a whole. However, it is true that sometimes students do not do well on the final exam due to extraneous factors that are beyond control even though they have worked very hard. Meanwhile, some students might do very well purely by luck even though they have not sufficiently learned the course materials. Neither situation is fair to all students. Therefore, rather than based on peer grades, this project is going to introduce a new model for curving based on an individual’s past grades, demographic information and learning motivation.
+
+## Data
+
+The data originates from the UCI Machine Learning Repository [^1]. The data was collected from two public Portuguese schools using school reports and questionnaires during the 2005-2006 school year. The dataset we are using contains students’ 3-period grades for Portuguese language courses; their demographic information including school, sex, and age; their socioeconomic-status-related features such as family size, parents’ cohabitation status, and parents’ education level; their school-related attributes such as weekly study time, number of past class failures, and presence of educational support; as well as extracurricular predictors such as internet access at home. A full description of the dataset can be found in Appendix[^2].
+
+```{r, data-setup, message = FALSE}
+data = read.csv("student-por.csv", sep = ";")
+data = data %>% mutate(levels = case_when(
+  G3 >= 16 ~ "A",
+  G3 >= 14 & G3 <= 15 ~ "B",
+  G3 >= 12 & G3 <= 13 ~ "C",
+  G3 >= 10 & G3 <= 11 ~ "D",
+  G3 <= 9 ~ "F",
+  TRUE ~ as.character(G3)
+))
+data$levels = as.factor(data$levels)
+data["level"] = as.factor(ifelse(data["G3"] >= 10, "pass", "fail"))
+set.seed(42)
+trn_index = sample(1:nrow(data), round(nrow(data) * 0.9), replace = FALSE)
+trn = data[trn_index, ]
+tst = data[-trn_index, ]
+
+rmse = function(act, pred) {
+  sqrt(mean((act - pred) ^ 2))
+}
+mae = function(act, pred) {
+  abs(mean(act - pred))
+}
+acc = function(act, pred) {
+  mean(act == pred)
+}
+```
+
+# Method
+
+To construct a model to curve students’ grades based on individual effort, we approach the problem in the following steps:
+- Build a predictive model for the final grade and then pick up the features that are representative enough for the students’ academic performance;
+  - Regression with and without `G1` and `G2`: linear regression, decision tree and KNN 
+  - Binary Classification: Random Forest, KNN, Decision Tree, Logistic Regression, Naive Bayes, GBM, Ridge Regression, and Lasso Regression
+  - Multilevel Classification: KNN, Decision Tree, Random Forest, Regularization, and GBM 
+- Tune the grading weight so that most of the students who ***failed*** the final but are predicted to ***pass*** are curved to ***pass***;
+- Come up with a comprehensive formula for curving.
+
+First, we used regression and classification to predict the final grade `G3` by using all the features and by using all the features except for `G1` and `G2`. By noticing a class imbalance of failure vs. pass, we used “rose” for subsampling for binary classification models, and found a significant improvement of accuracy. Because of very low prediction accuracy of multilevel classification models, we excluded them for curving purpose. 
+
+```{r, binary class without rose w/o G1G2, warning = FALSE}
+# Random Forest
+set.seed(42)
+form = formula(level ~ . - G1 - G2 - G3 - levels)
+cv_rf = train(form, data = trn, method = "rf",
+              trControl = trainControl(method = "oob", number = 10))
+pred_rf = predict(cv_rf, tst)
+acc_rf = acc(act = tst$level, pred = pred_rf)
+
+# KNN
+set.seed(42)
+cv_knn = train(form, data = trn, method = "knn",
+               trControl = trainControl(method = "cv", number = 10))
+pred_knn = predict(cv_knn, tst)
+acc_knn = acc(act = tst$level, pred = pred_knn)
+
+# Decision Tree
+set.seed(42)
+cv_rpart = train(form, data = trn, method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10))
+pred_rpart = predict(cv_rpart, tst)
+acc_rpart = acc(act = tst$level, pred = pred_rpart)
+
+# Logistic Regression
+set.seed(42)
+cv_glm = train(form, data = trn, method = "glm",
+               trControl = trainControl(method = "cv", number = 10))
+pred_glm = predict(cv_glm, tst)
+acc_glm = acc(act = tst$level, pred = pred_glm)
+
+# Naive Bayes
+set.seed(42)
+cv_nb = train(form, data = trn, method = "nb",
+              trControl = trainControl(method = "cv", number = 10))
+pred_nb = predict(cv_nb, tst)
+acc_nb = acc(act = tst$level, pred = pred_nb)
+
+# GBM
+set.seed(42)
+cv_gbm = train(form, data = trn, method = "gbm", verbose = FALSE,
+               trControl = trainControl(method = "cv", number = 10))
+pred_gbm = predict(cv_gbm, tst)
+acc_gbm = acc(act = tst$level, pred = pred_gbm)
+
+# Ridge Regression
+set.seed(42)
+trn_x = model.matrix(level ~ . - G1 - G2 - G3 - levels, data = trn)[, -1]
+tst_x = model.matrix(level ~ . - G1 - G2 - G3 - levels, data = tst)[, -1]
+
+cv_ridge = cv.glmnet(trn_x, trn$level, nfolds = 10, family = "binomial", alpha = 0)
+
+mod_ridge = glmnet(trn_x, trn$level, family = "binomial", alpha = 0, lambda = cv_ridge$lambda.min)
+pred_ridge = predict(mod_ridge, tst_x, type = "class")
+acc_ridge = acc(act = tst$level, pred = pred_ridge)
+
+# Lasso Regression
+set.seed(42)
+cv_lasso = cv.glmnet(trn_x, trn$level, nfolds = 10, family = "binomial", alpha = 1)
+
+mod_lasso = glmnet(trn_x, trn$level, family = "binomial", alpha = 1, lambda = cv_lasso$lambda.min)
+pred_lasso = predict(mod_lasso, tst_x, type = "class")
+acc_lasso = acc(act = tst$level, pred = pred_lasso)
+```
+
+```{r, binary without rose with G1G2, warning = FALSE}
+# Random Forest
+set.seed(42)
+form_12 = formula(level ~ . - G3 - levels)
+cv_rf_12 = train(form_12, data = trn, method = "rf",
+                 trControl = trainControl(method = "oob", number = 10))
+pred_rf_12 = predict(cv_rf_12, tst)
+acc_rf_12 = acc(act = tst$level, pred = pred_rf_12)
+
+# KNN
+set.seed(42)
+cv_knn_12 = train(form_12, data = trn, method = "knn",
+               trControl = trainControl(method = "cv", number = 10))
+pred_knn_12 = predict(cv_knn_12, tst)
+acc_knn_12 = acc(act = tst$level, pred = pred_knn_12)
+
+# Decision Tree
+set.seed(42)
+cv_rpart_12 = train(form_12, data = trn, method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10))
+pred_rpart_12 = predict(cv_rpart_12, tst)
+acc_rpart_12 = acc(act = tst$level, pred = pred_rpart_12)
+
+# Logistic Regression
+set.seed(42)
+cv_glm_12 = train(form_12, data = trn, method = "glm",
+               trControl = trainControl(method = "cv", number = 10))
+pred_glm_12 = predict(cv_glm_12, tst)
+acc_glm_12 = acc(act = tst$level, pred = pred_glm_12)
+
+# Naive Bayes
+set.seed(42)
+cv_nb_12 = train(form_12, data = trn, method = "nb",
+              trControl = trainControl(method = "cv", number = 10))
+pred_nb_12 = predict(cv_nb_12, tst)
+acc_nb_12 = acc(act = tst$level, pred = pred_nb_12)
+
+# GBM
+set.seed(42)
+cv_gbm_12 = train(form_12, data = trn, method = "gbm", verbose = FALSE,
+               trControl = trainControl(method = "cv", number = 10))
+pred_gbm_12 = predict(cv_gbm_12, tst)
+acc_gbm_12 = acc(act = tst$level, pred = pred_gbm_12)
+
+# Ridge Regression
+set.seed(42)
+trn_x_12 = model.matrix(level ~ . - G3 - levels, data = trn)[, -1]
+tst_x_12 = model.matrix(level ~ . - G3 - levels, data = tst)[, -1]
+
+cv_ridge_12 = cv.glmnet(trn_x_12, trn$level, nfolds = 10, family = "binomial", alpha = 0)
+
+mod_ridge_12 = glmnet(trn_x_12, trn$level, family = "binomial", alpha = 0, lambda = cv_ridge_12$lambda.min)
+pred_ridge_12 = predict(mod_ridge_12, tst_x_12, type = "class")
+acc_ridge_12 = acc(act = tst$level, pred = pred_ridge_12)
+
+# Lasso Regression
+set.seed(42)
+cv_lasso_12 = cv.glmnet(trn_x_12, trn$level, nfolds = 10, family = "binomial", alpha = 1)
+
+mod_lasso_12 = glmnet(trn_x_12, trn$level, family = "binomial", alpha = 1, lambda = cv_lasso_12$lambda.min)
+pred_lasso_12 = predict(mod_lasso_12, tst_x_12, type = "class")
+acc_lasso_12 = acc(act = tst$level, pred = pred_lasso_12)
+```
+
+```{r, binary with rose without G1G2, warning = FALSE}
+# Random Forest
+set.seed(42)
+form = formula(level ~ . - G1 - G2 - G3 - levels)
+cv_rf_rose = train(form, data = trn, method = "rf",
+                   trControl = trainControl(method = "oob", number = 10,  sampling = "rose"))
+pred_rf_rose = predict(cv_rf_rose, tst)
+acc_rf_rose = acc(act = tst$level, pred = pred_rf_rose)
+
+
+# KNN
+set.seed(42)
+cv_knn_rose = train(form, data = trn, method = "knn",
+                    trControl = trainControl(method = "cv", number = 10,  sampling = "rose"))
+pred_knn_rose = predict(cv_knn_rose, tst)
+acc_knn_rose = acc(act = tst$level, pred = pred_knn_rose)
+
+# Decision Tree
+set.seed(42)
+cv_rpart_rose = train(form, data = trn, method = "rpart",
+                 trControl = trainControl(method = "cv", number = 10,  sampling = "rose"))
+pred_rpart_rose = predict(cv_rpart_rose, tst)
+acc_rpart_rose = acc(act = tst$level, pred = pred_rpart_rose)
+
+cm = confusionMatrix(pred_rpart_rose, reference = as.factor(tst$level), positive = "pass")
+
+# Logistic Regression
+set.seed(42)
+cv_glm_rose = train(form, data = trn, method = "glm",
+                    trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_glm_rose = predict(cv_glm_rose, tst)
+acc_glm_rose = acc(act = tst$level, pred = pred_glm_rose)
+
+# Naive Bayes
+set.seed(42)
+cv_nb_rose = train(form, data = trn, method = "nb",
+                   trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_nb_rose = predict(cv_nb_rose, tst)
+acc_nb_rose = acc(act = tst$level, pred = pred_nb_rose)
+
+# GBM
+set.seed(42)
+cv_gbm_rose = train(form, data = trn, method = "gbm", verbose = FALSE,
+                    trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_gbm_rose = predict(cv_gbm_rose, tst)
+acc_gbm_rose = acc(act = tst$level, pred = pred_gbm_rose)
+```
+
+```{r, binary with rose with G1G2, warning = FALSE}
+# Random Forest
+set.seed(42)
+form_12 = formula(level ~ . - G3 - levels)
+cv_rf_12_rose = train(form_12, data = trn, method = "rf",
+                      trControl = trainControl(method = "oob", number = 10, sampling = "rose"))
+pred_rf_12_rose = predict(cv_rf_12_rose, tst)
+acc_rf_12_rose = acc(act = tst$level, pred = pred_rf_12_rose)
+
+# KNN
+set.seed(42)
+cv_knn_12_rose = train(form_12, data = trn, method = "knn",
+                       trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_knn_12_rose = predict(cv_knn_12_rose, tst)
+acc_knn_12_rose = acc(act = tst$level, pred = pred_knn_12_rose)
+
+# Decision Tree
+set.seed(42)
+cv_rpart_12_rose = train(form_12, data = trn, method = "rpart",
+                         trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_rpart_12_rose = predict(cv_rpart_12_rose, tst)
+acc_rpart_12_rose = acc(act = tst$level, pred = pred_rpart_12_rose)
+
+# Logistic Regression
+set.seed(42)
+cv_glm_12_rose = train(form_12, data = trn, method = "glm",
+                      trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_glm_12_rose = predict(cv_glm_12_rose, tst)
+acc_glm_12_rose = acc(act = tst$level, pred = pred_glm_12_rose)
+
+# Naive Bayes
+set.seed(42)
+cv_nb_12_rose = train(form_12, data = trn, method = "nb",
+                      trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_nb_12_rose = predict(cv_nb_12_rose, tst)
+acc_nb_12_rose = acc(act = tst$level, pred = pred_nb_12_rose)
+
+# GBM
+set.seed(42)
+cv_gbm_12_rose = train(form_12, data = trn, method = "gbm", verbose = FALSE,
+                       trControl = trainControl(method = "cv", number = 10, sampling = "rose"))
+pred_gbm_12_rose = predict(cv_gbm_12_rose, tst)
+acc_gbm_12_rose = acc(act = tst$level, pred = pred_gbm_12_rose)
+```
+
+```{r, multiclass without G1, G2}
+# KNN
+form_multi = formula(levels ~ . - G1 - G2 - G3 - level)
+set.seed(42)
+knn_multi = train(form_multi, data = trn,
+                  method = "knn",
+                  trControl = caret::trainControl(method = "cv", number = 10),
+                  tuneLength = 20)
+acc_multi_knn = acc(act = tst$levels, pred = predict(knn_multi, tst))
+
+# Decision tree
+set.seed(42)
+rpart_multi = train(form_multi, data = trn,
+                    method = "rpart",
+                    trControl = trainControl(method = "cv", number = 10),
+                    tuneLength = 10)
+acc_multi_rpart = acc(act = tst$levels, pred = predict(rpart_multi, tst))
+
+# Random Forest
+set.seed(42)
+rf_multi = train(form_multi, data = trn,
+                  method = "rf",
+                 trControl = caret::trainControl(method = "oob", number = 10),
+                 tuneLength = 10,
+                 importance = TRUE)
+acc_multi_rf = acc(act = tst$levels, pred = predict(rf_multi, tst))
+
+# Regularization
+set.seed(42)
+regular_multi = train(form_multi, data = trn,
+                      method = "glmnet",
+                      trControl = trainControl(method = "cv", number = 10))
+acc_multi_regular = acc(act = tst$levels, pred = predict(regular_multi, tst))
+
+# GBM
+set.seed(42)
+gbm_multi = train(form_multi, data = trn,
+                  method = "gbm", verbose = FALSE,
+                  trControl = trainControl(method = "cv", number = 10))
+acc_multi_gbm = acc(act = tst$levels, pred = predict(gbm_multi, tst))
+```
+
+```{r multiclass with G1G2}
+# KNN
+form_multi_12 = formula(levels ~ . - G3 - level)
+set.seed(42)
+knn_multi_12 = train(form_multi_12, data = trn,
+                     method = "knn",
+                     trControl = trainControl(method = "cv", number = 10),
+                     tuneLength = 10)
+acc_multi_12_knn = acc(act = tst$levels, pred = predict(knn_multi_12, tst))
+
+# Decision tree
+set.seed(42)
+rpart_multi_12 = train(form_multi_12, data = trn,
+                       method = "rpart",
+                       trControl = trainControl(method = "cv", number = 10),
+                       tuneLength = 10)
+acc_multi_12_rpart = acc(act = tst$levels, pred = predict(rpart_multi_12, tst))
+
+# Random Forest
+set.seed(42)
+rf_multi_12 = train(form_multi_12, data = trn,
+                    method = "rf",
+                    trControl = trainControl(method = "oob", number = 10),
+                    tuneLength = 10,
+                    importance = TRUE)
+acc_multi_12_rf = acc(act = tst$levels, pred = predict(rf_multi_12, tst))
+
+# Regularization
+set.seed(42)
+regular_multi_12 = train(form_multi_12, data = trn,
+                         method = "glmnet",
+                         trControl = trainControl(method = "cv", number = 10))
+# regular_multi_12 ###final model uses alpha = 1 -> lasso
+acc_multi_12_regular = acc(act = tst$levels, pred = predict(regular_multi_12, tst))
+
+# GBM
+set.seed(42)
+gbm_multi_12 = train(form_multi_12, data = trn,
+                       method = "gbm", verbose = FALSE,
+                       trControl = trainControl(method = "cv", number = 10))
+acc_multi_12_gbm = acc(act = tst$levels, pred = predict(gbm_multi_12, tst))
+```
+
+```{r regression without G1G2}
+fitcontrol = trainControl(method = "cv", number = 10)
+
+form_reg = formula(G3 ~ . - G1 - G2 - levels - level)
+
+# Linear regression
+lm_reg = train(form_reg, data = trn, method = "lm", trControl = fitcontrol, metric = "RMSE")
+
+rmse_reg_lm = rmse(act = tst$G3, pred = predict(lm_reg, tst))
+
+# tree model
+rpart_reg = train(form_reg, data = trn, method = "rpart", trControl = fitcontrol, metric = "RMSE")
+rmse_reg_rpart = rmse(act = tst$G3, pred = predict(rpart_reg, tst))
+
+# knn model
+knn_reg = train(form_reg, data = data, method = "knn", trControl = fitcontrol, metric = "RMSE")
+rmse_reg_knn = rmse(act = tst$G3, pred = predict(knn_reg, tst))
+```
+
+```{r, regression with G1G2, warning = FALSE}
+form_reg_12 = formula(G3 ~ G1 + G2)
+form_reg_all = formula(G3 ~ . - level - levels)
+
+# Linear regression
+lm_reg_all = train(form_reg_all, data = trn, method = "lm", trControl = fitcontrol, metric = "RMSE")
+## ## G1 and G2 shows much more significance than other features
+lm_reg_12 = train(form_reg_12, data = trn, method = "lm", trControl = fitcontrol, metric = "RMSE")
+
+rmse_reg_all_lm = rmse(act = tst$G3, pred = predict(lm_reg_all, tst))
+rmse_reg_12_lm = rmse(act = tst$G3, pred = predict(lm_reg_12, tst))
+
+# tree model
+rpart_reg_12 = train(form_reg_all, data = trn, method = "rpart", trControl = fitcontrol, metric = "RMSE")
+rmse_reg_all_rpart = rmse(act = tst$G3, pred = predict(rpart_reg_12, tst))
+
+# knn model
+knn_reg_12 = train(form_reg_all, data = trn, method = "knn", trControl = fitcontrol, metric = "RMSE")
+rmse_reg_all_knn = rmse(act = tst$G3, pred = predict(knn_reg_12, tst))
+```
+
+# Results
+
+```{r, message = FALSE}
+accuracy = c(acc_rf, acc_knn, acc_rpart, acc_glm, acc_nb, acc_gbm, acc_ridge, acc_lasso)
+a_tibble = tibble(Model = c("Random Forest Model", "KNN Model", "Decision Tree Model", "Logistic Regression Model", "Naive Bayes Model", "GBM Model", "Ridge Regression Model", "Lasso Regression Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Classification without ROSE, Without G1 and G2") %>% 
+    kable_styling("striped", full_width = FALSE)
+```
+
+
+```{r}
+accuracy = c(acc_rf_12, acc_knn_12, acc_rpart_12, acc_glm_12, acc_nb_12, acc_gbm_12, acc_ridge_12, acc_lasso_12)
+a_tibble = tibble(Model = c("Random Forest Model", "KNN Model", "Decision Tree Model", "Logistic Regression Model", "Naive Bayes Model", "GBM Model", "Ridge Regression Model", "Lasso Regression Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Classification without ROSE, With G1 and G2") %>% 
+    kable_styling("striped", full_width = FALSE)
+```
+
+
+```{r}
+accuracy = c(acc_rf_rose, acc_knn_rose, acc_rpart_rose, acc_glm_rose, acc_nb_rose, acc_gbm_rose)
+a_tibble = tibble(Model = c("Random Forest Model", "KNN Model", "Decision Tree Model", "Logistic Regression Model", "Naive Bayes Model", "GBM Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Classification with ROSE, Without G1 and G2") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+```{r}
+accuracy = c(acc_rf_12_rose, acc_knn_12_rose, acc_rpart_12_rose, acc_glm_12_rose, acc_nb_12_rose, acc_gbm_12_rose)
+a_tibble = tibble(Model = c("Random Forest Model", "KNN Model", "Decision Tree Model", "Logistic Regression Model", "Naive Bayes Model", "GBM Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Classification with ROSE, With G1 and G2") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+```{r}
+accuracy = c(acc_multi_knn, acc_multi_rpart, acc_multi_rf, acc_multi_regular, acc_multi_gbm)
+a_tibble = tibble(Model = c("KNN Model", "Decision Tree Model", "Random Forest Model", "Regularization Model", "GBM Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "table: Multiclass without G1 and G2") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r}
+accuracy = c(acc_multi_12_knn, acc_multi_12_rpart, acc_multi_12_rf, acc_multi_12_regular, acc_multi_12_gbm)
+a_tibble = tibble(Model = c("KNN Model", "Decision Tree Model", "Random Forest Model", "Regularization Model", "GBM Model"),
+                  Accuracy = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Multiclass with G1 and G2") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+# 
+
+```{r, test-results}
+tst_tab = table(
+  predicted = pred_rpart_rose,
+  actual = as.factor(tst$level)
+)
+
+rownames(tst_tab) = c("Predicted: Fail", "Predicted: Pass")
+colnames(tst_tab) = c("Fail", "Pass")
+
+tst_tab %>% 
+  kable(digits = 3, caption = "Table: Test Results, **Decision Tree with ROSE**") %>% 
+  kable_styling("striped", full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "Truth" = 2)) %>% 
+  column_spec(column = 1, bold = TRUE)
+```
+
+```{r}
+accuracy = c(cm$overall[1], cm$byClass[1], cm$byClass[2])
+a_tibble = tibble(Metrics = c("Accuracy", "Sensitivity", "Specificity"),
+                  Value = accuracy)
+knitr::kable(a_tibble, digits = 3, booktabs = TRUE, caption = "Table: Metrics, **Decision Tree with ROSE**") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+# Discussion
+
+In regard with the regression task, the linear model performs much better than other algorithms in both cases (including `G1`, `G2` and excluding `G1`, `G2`) and the p-value for `G1` and `G2` shows way more importance compared with other features. It indicates `G1` and `G2` are predictive enough for students’ final performance. Then if a student performed poorly on the final exam but did fairly well on the first two exams, we could curve his final grade by replacing half of the final grade with the average of the first two exams. 
+
+```{r linear plot}
+#plot showing linear relationships 
+ggPredict(lm_reg_12$finalModel,se = TRUE,interactive = TRUE)
+```
+
+But as `G1` and `G2` are all about the grades, this curving method has little influence on students who are not good at taking exams. To explore other predictors, we examined models excluding `G1` and `G2`. For the binary classification task, the decision tree model achieves highest ROC and accuracy. The following plot of the decision tree shows the importance of `failures` and `higher`.
+
+```{r}
+#tree plot for rpart with rose without G1, G2
+rpart.plot::rpart.plot(cv_rpart_rose$finalModel)
+```
+
+Then, for this type of curving, we come up with two methods:
+
+The first way is to make use of the important predictors found through variable importance plots and the decision tree plot as the basis for curving. The predictors are “whether or not wants to take higher education” and “number of past class failures”, both of which are indicators of learning motivations. Our rationale is that as long as a student has a high learning motivation, we should reward him with a better final grade. Therefore, we decided to use the following formula for final grade curving:
+If `higher` = yes, $$G3 = G3 * (1+5\%)$$;
+then, if `failures` = 0, $$G3 = G3 + 1$$. 
+
+The second way is to curve the grades using the quantile. Based on the proportion of passing in the training data, if a student’s grade is in the top 60% quantile, we will give him a pass.
+
+It looks potential to use the model as a way of curving but here are several limitations:
+- The model is limited by the total dataset which only includes about 650 observations. More data are expected to improve the model.
+- The model is trained with the data collected from 2 specific schools in Portugal so there could be variance when applying the model to other samples.
+
+# Appendix
+
+## Data Dictionary
+
+- `sex`: student’s sex (binary: female or male)
+- `age`: student’s age (numeric: from 15 to 22)
+- `school`: student’s school (binary: **Gabriel Pereira** or **Mousinho da Silveira**)
+- `address`: student’s home address type (binary: urban or rural)
+- `Pstatus`: parent’s cohabitation status (binary: living together or apart)
+- `Medu`: mother’s education (numeric: from 0 to 4[^a])
+- `Mjob`: mother’s job (nominal[^b])
+- `Fedu`: father’s education (numeric: from 0 to 4[^a])
+- `Fjob`: father’s job (nominal[^b])
+- `guardian`: student’s guardian (nominal: mother, father or other)
+- `famsize`: family size (binary: ≤ 3 or > 3)
+- `famrel`: quality of family relationships (numeric: from 1 – very bad to 5 – excellent)
+- `reason`: reason to choose this school (nominal: close to home, school reputation, course preference or other)
+- `traveltime`: home to school travel time (numeric: 1 – < 15 min., 2 – 15 to 30 min., 3 – 30 min. to 1 hour
+or 4 – > 1 hour)
+- `studytime`: weekly study time (numeric: 1 – < 2 hours, 2 – 2 to 5 hours, 3 – 5 to 10 hours or 4 – > 10 hours)
+- `failures`: number of past class failures (numeric: $n$ if 1 ≤ $n$ < 3, else 4)
+- `schoolsup`: extra educational school support (binary: yes or no)
+- `famsup`: family educational support (binary: yes or no)
+- `activities`: extra-curricular activities (binary: yes or no)
+- `paidclass`: extra paid classes (binary: yes or no)
+- `internet`: Internet access at home (binary: yes or no)
+- `nursery`: attended nursery school (binary: yes or no)
+- `higher`: wants to take higher education (binary: yes or no)
+- `romantic`: with a romantic relationship (binary: yes or no)
+- `freetime`: free time after school (numeric: from 1 – very low to 5 – very high)
+- `goout`: going out with friends (numeric: from 1 – very low to 5 – very high)
+- `Walc`: weekend alcohol consumption (numeric: from 1 – very low to 5 – very high)
+- `Dalc`: workday alcohol consumption (numeric: from 1 – very low to 5 – very high)
+- `health`: current health status (numeric: from 1 – very bad to 5 – very good)
+- `absences`: number of school absences (numeric: from 0 to 93)
+- `G1`: first period grade (numeric: from 0 to 20)
+- `G2`: second period grade (numeric: from 0 to 20)
+- `G3`: final grade (numeric: from 0 to 20)
+
+[^a]: 0 – none, 1 – primary education (4th grade), 2 – 5th to 9th grade, 3 – secondary education or 4 – higher education
+[^b]: teacher, health care related, civil services (e.g. administrative or police), at home or other.
+
+## Links
+
+[^1]: [Student Performance Data Set](http://archive.ics.uci.edu/ml/datasets/Student+Performance)
+[^2]: [European Statistics](https://ec.europa.eu/eurostat/)
+
+## EDA
+
+```{r, eda-plots, fig.height = 10, fig.width = 20}
+######G3 distribution
+plot_1 = trn %>% 
+  ggplot(aes(x = G3)) + 
+  stat_count(width = 0.5) +
+  ggtitle("Figure: G3 Distribution")
+
+####fail vs. pass distribution
+plot_2 = trn %>% 
+  ggplot(aes(x = level)) + 
+  stat_count(width = 0.5) +
+  ggtitle("Figure:  Fail vs. Pass Distribution")
+
+######5-level grades distribution
+plot_3 = trn %>% 
+  ggplot(aes(x = levels)) + 
+  stat_count(width = 0.5)+
+  ggtitle("Figure: 5-level Grades Distribution")
+
+#######number of past class failures
+plot_4 = trn %>% 
+  ggplot(aes(x = failures)) + 
+  stat_count(width = 0.5) +
+  ggtitle("Figure: Distribution of # past class failures")
+
+#######whether or not wants to take higher education
+plot_5 = trn %>% 
+  ggplot(aes(x = higher)) + 
+  stat_count(width = 0.5) +
+  ggtitle("Figure: Distribution of Intention for Taking Higher Education")
+
+######whether or not gets extra educational school support
+plot_6 = trn %>% 
+  ggplot(aes(x = schoolsup)) + 
+  stat_count(width = 0.5) +
+  ggtitle("Figure: Distribution of Getting Extra Educational School Support")
+
+grid.arrange(plot_1, plot_2, plot_3, plot_4, plot_5, plot_6, ncol = 3, nrow = 2)
+```
